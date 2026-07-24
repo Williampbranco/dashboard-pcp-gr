@@ -5,18 +5,13 @@ import plotly.express as px
 import os
 import database  # Importa o seu script database.py
 
-# --- VERIFICAÇÃO AUTOMÁTICA DO BANCO DE DADOS ---
-# Se o arquivo .db não existir no servidor da nuvem, ele cria e popula na hora!
+# 1. Configuração da Página (DEVE SER O PRIMEIRA CHAMADA DO STREAMLIT)
+st.set_page_config(page_title="PCP Executivo — GR CRUZEIRO", page_icon="🏭", layout="wide")
+
+# 2. VERIFICAÇÃO AUTOMÁTICA DO BANCO DE DADOS
+# Se o arquivo .db não existir no servidor da nuvem, cria e popula na hora!
 if not os.path.exists("gr_cruzeiro_pcp.db"):
     database.inicializar_banco_dados()
-
-# Configuração da Página
-st.set_page_config(page_title="PCP Executivo — GR CRUZEIRO", page_icon="🏭", layout="wide")
-
-# ... (restante do código do seu main.py continua igual)
-
-# Configuração da Página
-st.set_page_config(page_title="PCP Executivo — GR CRUZEIRO", page_icon="🏭", layout="wide")
 
 # ESTILIZAÇÃO CSS PROFISSIONAL PARA CARDS E ELEMENTOS
 st.markdown("""
@@ -68,7 +63,6 @@ def carregar_dados_produtos():
     conn.close()
 
     # AJUSTE DINÂMICO PARA DEMONSTRAÇÃO DO ALERTA MRP
-    # Reduzindo o estoque de alguns itens para gerar alertas reais de PCP
     itens_alerta = ["Ácido Clorídrico 32%", "Hipoclorito de Sódio 12%", "Ácido Sulfúrico 98%", "Detergente Alcalino Clorado | GR 02", "Barrilha Densa"]
     df.loc[df['nome'].isin(itens_alerta), 'estoque_atual'] = df['estoque_minimo'] * 0.35
 
@@ -145,18 +139,15 @@ tab_mrp, tab_abc, tab_catalogo = st.tabs([
     "📦 Catálogo Completo GR Cruzeiro"
 ])
 
-# 1. ABA DE ALERTAS MRP (Melhorada e Ativa)
+# 1. ABA DE ALERTAS MRP
 with tab_mrp:
     st.subheader("🚨 Itens Abaixo do Estoque Mínimo (Necessidade Urgente de Produção / Envasamento)")
     
     if len(df_criticos) > 0:
-        # Cálculos de PCP
         df_criticos["Déficit (Unidades)"] = df_criticos["estoque_minimo"] - df_criticos["estoque_atual"]
-        # Sugestão de OP com margem de segurança de +20%
         df_criticos["Sugestão de Lote OP"] = (df_criticos["Déficit (Unidades)"] * 1.2).round(0)
         df_criticos["Nível de Crise (%)"] = ((df_criticos["estoque_atual"] / df_criticos["estoque_minimo"]) * 100).round(1)
 
-        # Gráfico comparativo de Estoque vs Mínimo
         fig_mrp = px.bar(
             df_criticos,
             x="nome",
