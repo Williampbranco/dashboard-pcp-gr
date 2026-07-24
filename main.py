@@ -3,17 +3,58 @@ import pandas as pd
 import sqlite3
 import plotly.express as px
 import os
-import database  # Importa o seu script database.py
+import database  # Importa o arquivo database.py para criar a estrutura se não existir
 
-# 1. Configuração da Página (DEVE SER O PRIMEIRA CHAMADA DO STREAMLIT)
-st.set_page_config(page_title="PCP Executivo — GR CRUZEIRO", page_icon="🏭", layout="wide")
+# ==========================================
+# 1. CONFIGURAÇÃO DA PÁGINA (Deve ser a 1ª chamada Streamlit)
+# ==========================================
+st.set_page_config(
+    page_title="PCP Executivo — GR CRUZEIRO", 
+    page_icon="🏭", 
+    layout="wide"
+)
 
-# 2. VERIFICAÇÃO AUTOMÁTICA DO BANCO DE DADOS
-# Se o arquivo .db não existir no servidor da nuvem, cria e popula na hora!
-if not os.path.exists("gr_cruzeiro_pcp.db"):
-    database.inicializar_banco_dados()
+# ==========================================
+# 2. VERIFICAÇÃO E CONEXÃO SEGURA AO BANCO DE DADOS
+# ==========================================
+def get_connection():
+    # Se o arquivo de banco de dados SQLite não existir no servidor, força a criação imediata
+    if not os.path.exists("gr_cruzeiro_pcp.db"):
+        database.inicializar_banco_dados()
+    return sqlite3.connect("gr_cruzeiro_pcp.db")
 
-# ESTILIZAÇÃO CSS PROFISSIONAL PARA CARDS E ELEMENTOS
+@st.cache_data(ttl=60)  # Recarrega o cache a cada 60 segundos
+def carregar_dados_produtos():
+    # Garantia dupla de inicialização do banco antes da leitura SQL
+    if not os.path.exists("gr_cruzeiro_pcp.db"):
+        database.inicializar_banco_dados()
+
+    conn = get_connection()
+    query = """
+    SELECT p.codigo, p.nome, c.nome as categoria, p.unidade_medida, p.densidade_g_ml, 
+           p.estoque_atual, p.estoque_minimo, p.custo_unitario, p.preco_venda_unitario,
+           (p.estoque_atual * p.preco_venda_unitario) as valor_estoque_venda
+    FROM produtos p
+    LEFT JOIN categorias c ON p.categoria_id = c.id
+    """
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+
+    # Ajuste dinâmico para simulação do Alerta MRP no PCP
+    itens_alerta = [
+        "Ácido Clorídrico 32%", 
+        "Hipoclorito de Sódio 12%", 
+        "Ácido Sulfúrico 98%", 
+        "Detergente Alcalino Clorado | GR 02", 
+        "Barrilha Densa"
+    ]
+    df.loc[df['nome'].isin(itens_alerta), 'estoque_atual'] = df['estoque_minimo'] * 0.35
+
+    return df
+
+# ==========================================
+# 3. ESTILIZAÇÃO CSS CUSTOMIZADA (Cards Executivos)
+# ==========================================
 st.markdown("""
 <style>
     /* Estilização dos Cards Executivos */
@@ -40,33 +81,14 @@ st.markdown("""
     .kpi-status-ok { color: #10B981; font-weight: 600; font-size: 0.85rem; }
     .kpi-status-alert { color: #EF4444; font-weight: 600; font-size: 0.85rem; }
     
-    /* Customização de Tabelas e Alertas */
+    /* Customização de Tabelas */
     .stDataFrame { border-radius: 8px; overflow: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-# Conectar ao SQLite
-def get_connection():
-    return sqlite3.connect("gr_cruzeiro_pcp.db")
-
-@st.cache_data
-def carregar_dados_produtos():
-    conn = get_connection()
-    query = """
-    SELECT p.codigo, p.nome, c.nome as categoria, p.unidade_medida, p.densidade_g_ml, 
-           p.estoque_atual, p.estoque_minimo, p.custo_unitario, p.preco_venda_unitario,
-           (p.estoque_atual * p.preco_venda_unitario) as valor_estoque_venda
-    FROM produtos p
-    LEFT JOIN categorias c ON p.categoria_id = c.id
-    """
-    df = pd.read_sql_query(query, conn)
-    conn.close()
-
-    # AJUSTE DINÂMICO PARA DEMONSTRAÇÃO DO ALERTA MRP
-    itens_alerta = ["Ácido Clorídrico 32%", "Hipoclorito de Sódio 12%", "Ácido Sulfúrico 98%", "Detergente Alcalino Clorado | GR 02", "Barrilha Densa"]
-    df.loc[df['nome'].isin(itens_alerta), 'estoque_atual'] = df['estoque_minimo'] * 0.35
-
-    return df
+# ==========================================
+# 4. EXECUÇÃO DO PAINEL PRINCIPAL
+# ==========================================
 
 # Header da Aplicação
 st.title("🏭 Sistema Executivo de PCP — GR CRUZEIRO")
@@ -84,7 +106,7 @@ if cat_selecionada != "Todas":
 else:
     df_filtrado = df_produtos.copy()
 
-# --- CARDS DO CABEÇALHO (KPIs NOVO DESIGN) ---
+# --- CARDS DO CABEÇALHO (KPIs) ---
 total_skus = len(df_filtrado)
 valor_total_estoque = df_filtrado["valor_estoque_venda"].sum()
 df_criticos = df_filtrado[df_filtrado["estoque_atual"] < df_filtrado["estoque_minimo"]].copy()
@@ -144,10 +166,13 @@ with tab_mrp:
     st.subheader("🚨 Itens Abaixo do Estoque Mínimo (Necessidade Urgente de Produção / Envasamento)")
     
     if len(df_criticos) > 0:
+        # Cálculos de PCP
         df_criticos["Déficit (Unidades)"] = df_criticos["estoque_minimo"] - df_criticos["estoque_atual"]
+        # Sugestão de OP com margem de segurança de +20%
         df_criticos["Sugestão de Lote OP"] = (df_criticos["Déficit (Unidades)"] * 1.2).round(0)
         df_criticos["Nível de Crise (%)"] = ((df_criticos["estoque_atual"] / df_criticos["estoque_minimo"]) * 100).round(1)
 
+        # Gráfico comparativo
         fig_mrp = px.bar(
             df_criticos,
             x="nome",
