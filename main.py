@@ -3,10 +3,15 @@ import pandas as pd
 import sqlite3
 import plotly.express as px
 import os
-import database  # Importa o arquivo database.py para criar a estrutura se não existir
+
+# Tenta importar o módulo local de banco de dados
+try:
+    import database
+except ImportError:
+    database = None
 
 # ==========================================
-# 1. CONFIGURAÇÃO DA PÁGINA (Deve ser a 1ª chamada Streamlit)
+# 1. CONFIGURAÇÃO DA PÁGINA (Deve ser a 1ª chamada)
 # ==========================================
 st.set_page_config(
     page_title="PCP Executivo — GR CRUZEIRO", 
@@ -15,20 +20,21 @@ st.set_page_config(
 )
 
 # ==========================================
-# 2. VERIFICAÇÃO E CONEXÃO SEGURA AO BANCO DE DADOS
+# 2. FUNÇÕES DE BANCO DE DADOS E CARREGAMENTO
 # ==========================================
-def get_connection():
-    # Se o arquivo de banco de dados SQLite não existir no servidor, força a criação imediata
+def garantir_banco_existente():
+    """Garante que o banco de dados seja criado se não existir."""
     if not os.path.exists("gr_cruzeiro_pcp.db"):
-        database.inicializar_banco_dados()
+        if database is not None:
+            database.inicializar_banco_dados()
+
+def get_connection():
+    garantir_banco_existente()
     return sqlite3.connect("gr_cruzeiro_pcp.db")
 
-@st.cache_data(ttl=60)  # Recarrega o cache a cada 60 segundos
+@st.cache_data(ttl=30)
 def carregar_dados_produtos():
-    # Garantia dupla de inicialização do banco antes da leitura SQL
-    if not os.path.exists("gr_cruzeiro_pcp.db"):
-        database.inicializar_banco_dados()
-
+    garantir_banco_existente()
     conn = get_connection()
     query = """
     SELECT p.codigo, p.nome, c.nome as categoria, p.unidade_medida, p.densidade_g_ml, 
@@ -37,27 +43,29 @@ def carregar_dados_produtos():
     FROM produtos p
     LEFT JOIN categorias c ON p.categoria_id = c.id
     """
-    df = pd.read_sql_query(query, conn)
-    conn.close()
+    try:
+        df = pd.read_sql_query(query, conn)
+    except Exception as e:
+        # Se falhar por tabela inexistente, recria o banco e tenta novamente
+        if database is not None:
+            database.inicializar_banco_dados()
+            df = pd.read_sql_query(query, conn)
+        else:
+            raise e
+    finally:
+        conn.close()
 
-    # Ajuste dinâmico para simulação do Alerta MRP no PCP
-    itens_alerta = [
-        "Ácido Clorídrico 32%", 
-        "Hipoclorito de Sódio 12%", 
-        "Ácido Sulfúrico 98%", 
-        "Detergente Alcalino Clorado | GR 02", 
-        "Barrilha Densa"
-    ]
-    df.loc[df['nome'].isin(itens_alerta), 'estoque_atual'] = df['estoque_minimo'] * 0.35
+    # --- SIMULAÇÃO DE ALERTAS MRP (Força alguns itens a ficarem críticos) ---
+    if len(df) >= 5:
+        df.iloc[0:5, df.columns.get_loc('estoque_atual')] = df.iloc[0:5]['estoque_minimo'] * 0.35
 
     return df
 
 # ==========================================
-# 3. ESTILIZAÇÃO CSS CUSTOMIZADA (Cards Executivos)
+# 3. ESTILIZAÇÃO CSS CUSTOMIZADA
 # ==========================================
 st.markdown("""
 <style>
-    /* Estilização dos Cards Executivos */
     .kpi-card {
         background-color: #ffffff;
         border-radius: 10px;
@@ -80,25 +88,27 @@ st.markdown("""
     }
     .kpi-status-ok { color: #10B981; font-weight: 600; font-size: 0.85rem; }
     .kpi-status-alert { color: #EF4444; font-weight: 600; font-size: 0.85rem; }
-    
-    /* Customização de Tabelas */
-    .stDataFrame { border-radius: 8px; overflow: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 4. EXECUÇÃO DO PAINEL PRINCIPAL
+# 4. PAINEL PRINCIPAL
 # ==========================================
 
-# Header da Aplicação
 st.title("🏭 Sistema Executivo de PCP — GR CRUZEIRO")
 st.caption("Gestão Integrada de Planejamento, Estoque, Curva ABC e Necessidades de Produção Química")
 
-df_produtos = carregar_dados_produtos()
+# Carrega os dados
+try:
+    df_produtos = carregar_dados_produtos()
+except Exception as err:
+    st.error("⚠️ Ocorreu um problema ao conectar com o banco de dados local. Verifique se o arquivo 'database.py' e 'gr_cruzeiro_pcp.db' estão sincronizados.")
+    st.stop()
 
 # --- BARRA LATERAL ---
 st.sidebar.header("🔍 Filtros do PCP")
-categorias = ["Todas"] + list(df_produtos["categoria"].dropna().unique())
+categorias_unicas = df_produtos["categoria"].dropna().unique().tolist()
+categorias = ["Todas"] + sorted(categorias_unicas)
 cat_selecionada = st.sidebar.selectbox("Filtrar Categoria", categorias)
 
 if cat_selecionada != "Todas":
@@ -106,15 +116,15 @@ if cat_selecionada != "Todas":
 else:
     df_filtrado = df_produtos.copy()
 
-# --- CARDS DO CABEÇALHO (KPIs) ---
+# --- CARDS DE METRICAS (KPIs) ---
 total_skus = len(df_filtrado)
 valor_total_estoque = df_filtrado["valor_estoque_venda"].sum()
 df_criticos = df_filtrado[df_filtrado["estoque_atual"] < df_filtrado["estoque_minimo"]].copy()
 itens_abaixo_min = len(df_criticos)
 
-col1, col2, col3, col4 = st.columns(4)
+c1, c2, c3, c4 = st.columns(4)
 
-with col1:
+with c1:
     st.markdown(f"""
         <div class="kpi-card" style="border-left-color: #2563EB;">
             <div class="kpi-title">📦 Total de SKUs</div>
@@ -123,32 +133,32 @@ with col1:
         </div>
     """, unsafe_allow_html=True)
 
-with col2:
+with c2:
     st.markdown(f"""
         <div class="kpi-card" style="border-left-color: #059669;">
             <div class="kpi-title">💰 Valor do Estoque</div>
             <div class="kpi-value">R$ {valor_total_estoque:,.2f}</div>
-            <div class="kpi-status-ok">✔ Valor de Venda Potencial</div>
+            <div class="kpi-status-ok">✔ Potencial de Venda</div>
         </div>
     """, unsafe_allow_html=True)
 
-with col3:
+with c3:
     cor_alerta = "#EF4444" if itens_abaixo_min > 0 else "#10B981"
     status_txt = f"⚠️ {itens_abaixo_min} necessitam de OP" if itens_abaixo_min > 0 else "✔ Estoque Normalizado"
     st.markdown(f"""
         <div class="kpi-card" style="border-left-color: {cor_alerta};">
-            <div class="kpi-title">🚨 Alertas de Risco MRP</div>
+            <div class="kpi-title">🚨 Alertas MRP</div>
             <div class="kpi-value">{itens_abaixo_min} Itens</div>
             <div class="kpi-status-alert" style="color: {cor_alerta};">{status_txt}</div>
         </div>
     """, unsafe_allow_html=True)
 
-with col4:
+with c4:
     st.markdown(f"""
         <div class="kpi-card" style="border-left-color: #8B5CF6;">
-            <div class="kpi-title">⚡ Status do Sistema</div>
-            <div class="kpi-value">100%</div>
-            <div class="kpi-status-ok">✔ BD SQLite Conectado</div>
+            <div class="kpi-title">⚡ Status do Banco</div>
+            <div class="kpi-value">Conectado</div>
+            <div class="kpi-status-ok">✔ SQLite Ativo</div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -156,53 +166,45 @@ st.markdown("---")
 
 # --- ABAS PRINCIPAIS ---
 tab_mrp, tab_abc, tab_catalogo = st.tabs([
-    "🚨 Alertas MRP / Necessidade de Produção", 
+    "🚨 Alertas MRP / Necessidades de Produção", 
     "🏆 Curva ABC de Produtos", 
     "📦 Catálogo Completo GR Cruzeiro"
 ])
 
-# 1. ABA DE ALERTAS MRP
+# 1. ABA MRP
 with tab_mrp:
-    st.subheader("🚨 Itens Abaixo do Estoque Mínimo (Necessidade Urgente de Produção / Envasamento)")
+    st.subheader("🚨 Itens Abaixo do Estoque Mínimo (Necessidade Urgente de Produção)")
     
     if len(df_criticos) > 0:
-        # Cálculos de PCP
         df_criticos["Déficit (Unidades)"] = df_criticos["estoque_minimo"] - df_criticos["estoque_atual"]
-        # Sugestão de OP com margem de segurança de +20%
-        df_criticos["Sugestão de Lote OP"] = (df_criticos["Déficit (Unidades)"] * 1.2).round(0)
-        df_criticos["Nível de Crise (%)"] = ((df_criticos["estoque_atual"] / df_criticos["estoque_minimo"]) * 100).round(1)
+        df_criticos["Sugestão Lote OP (+20%)"] = (df_criticos["Déficit (Unidades)"] * 1.2).round(0)
+        df_criticos["Nível do Estoque (%)"] = ((df_criticos["estoque_atual"] / df_criticos["estoque_minimo"]) * 100).round(1)
 
-        # Gráfico comparativo
         fig_mrp = px.bar(
             df_criticos,
             x="nome",
             y=["estoque_atual", "estoque_minimo"],
             barmode="group",
-            title="Comparativo: Estoque Atual vs. Estoque Mínimo dos Itens Críticos",
-            labels={"value": "Quantidade", "variable": "Parâmetro", "nome": "Produto"},
+            title="Estoque Atual vs. Estoque Mínimo por Item Crítico",
+            labels={"value": "Quantidade", "variable": "Indicador", "nome": "Produto"},
             color_discrete_map={"estoque_atual": "#EF4444", "estoque_minimo": "#9CA3AF"}
         )
         st.plotly_chart(fig_mrp, use_container_width=True)
 
-        st.markdown("### 📋 Tabela de Sugestão de Ordens de Produção (OP)")
+        st.markdown("### 📋 Sugestão de Ordens de Produção (OP)")
         st.dataframe(
             df_criticos[[
                 "codigo", "nome", "categoria", "unidade_medida", 
-                "estoque_atual", "estoque_minimo", "Déficit (Unidades)", "Sugestão de Lote OP", "Nível de Crise (%)"
-            ]].sort_values(by="Nível de Crise (%)"),
+                "estoque_atual", "estoque_minimo", "Déficit (Unidades)", "Sugestão Lote OP (+20%)", "Nível do Estoque (%)"
+            ]].sort_values(by="Nível do Estoque (%)"),
             use_container_width=True
         )
-
-        col_op1, col_op2 = st.columns([3, 1])
-        with col_op2:
-            if st.button("🚀 Gerar Ordens de Produção Automáticas"):
-                st.success("Ordens de Produção (OPs) enviadas para a fila do sequenciamento de envase!")
     else:
-        st.success("🎉 Excelente! Nenhum item está abaixo do estoque mínimo no momento.")
+        st.success("🎉 Nenhum item está abaixo do estoque mínimo.")
 
 # 2. ABA CURVA ABC
 with tab_abc:
-    st.subheader("Análise ABC por Valor Potencial de Estoque")
+    st.subheader("Análise ABC por Valor Total de Estoque")
     df_abc = df_filtrado.sort_values(by="valor_estoque_venda", ascending=False).reset_index(drop=True)
     df_abc["% Acumulada"] = (df_abc["valor_estoque_venda"].cumsum() / df_abc["valor_estoque_venda"].sum()) * 100
     
@@ -220,7 +222,7 @@ with tab_abc:
             x="nome", 
             y="valor_estoque_venda", 
             color="Curva ABC",
-            title="Top 15 Produtos com Maior Impacto Financeiro (R$)",
+            title="Top Produtos por Representatividade Financeira (R$)",
             labels={"nome": "Produto", "valor_estoque_venda": "Valor (R$)"},
             color_discrete_map={"Classe A": "#1E88E5", "Classe B": "#F59E0B", "Classe C": "#10B981"}
         )
@@ -232,7 +234,7 @@ with tab_abc:
             names="Curva ABC", 
             values="valor_estoque_venda", 
             hole=0.4, 
-            title="Distribuição Financeira da Curva ABC",
+            title="Distribuição Curva ABC",
             color="Curva ABC",
             color_discrete_map={"Classe A": "#1E88E5", "Classe B": "#F59E0B", "Classe C": "#10B981"}
         )
@@ -240,5 +242,5 @@ with tab_abc:
 
 # 3. ABA CATÁLOGO
 with tab_catalogo:
-    st.subheader("Catálogo Mestre de Produtos GR CRUZEIRO")
+    st.subheader("Catálogo Mestre de Produtos")
     st.dataframe(df_filtrado, use_container_width=True)
