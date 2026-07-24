@@ -2,6 +2,18 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import plotly.express as px
+import os
+import database  # Importa o seu script database.py
+
+# --- VERIFICAÇÃO AUTOMÁTICA DO BANCO DE DADOS ---
+# Se o arquivo .db não existir no servidor da nuvem, ele cria e popula na hora!
+if not os.path.exists("gr_cruzeiro_pcp.db"):
+    database.inicializar_banco_dados()
+
+# Configuração da Página
+st.set_page_config(page_title="PCP Executivo — GR CRUZEIRO", page_icon="🏭", layout="wide")
+
+# ... (restante do código do seu main.py continua igual)
 
 # Configuração da Página
 st.set_page_config(page_title="PCP Executivo — GR CRUZEIRO", page_icon="🏭", layout="wide")
